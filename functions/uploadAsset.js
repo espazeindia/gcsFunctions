@@ -7,31 +7,20 @@
  * Trigger: HTTP POST
  * URL: https://REGION-PROJECT_ID.cloudfunctions.net/uploadAsset
  * 
- * Request Body:
- * {
- *   "path": ["grocery", "instant-foods", "maggi1.png"],  // Array representing folder hierarchy + filename
- *   "file": "base64_encoded_file_data"  // Base64 encoded file content
- * }
- * 
- * OR using multipart/form-data:
+ * Request Body (multipart/form-data):
  * - path: JSON string array ["grocery", "instant-foods", "maggi1.png"]
  * - file: File upload
  * 
- * Response:
+ * OR JSON with base64:
  * {
- *   "success": true,
- *   "message": "File uploaded successfully",
- *   "data": {
- *     "bucket": "espaze-seller-product-assets",
- *     "filePath": "grocery/instant-foods/maggi1.png",
- *     "publicUrl": "https://storage.googleapis.com/espaze-seller-product-assets/grocery/instant-foods/maggi1.png"
- *   }
+ *   "path": ["grocery", "instant-foods", "maggi1.png"],
+ *   "file": "base64_encoded_file_data"
  * }
  */
 
 const functions = require('@google-cloud/functions-framework');
 const { Storage } = require('@google-cloud/storage');
-const Busboy = require('busboy');
+const busboy = require('busboy');
 const { logger, setCorsHeaders, errorResponse, successResponse } = require('../shared/utils');
 
 // Initialize Google Cloud Storage
@@ -39,65 +28,70 @@ const storage = new Storage();
 const BUCKET_NAME = 'espaze-seller-product-assets';
 
 /**
- * Parse multipart form data
+ * Parse multipart form data with proper error handling
  */
 function parseMultipartForm(req) {
   return new Promise((resolve, reject) => {
-    try {
-      const busboy = Busboy({ headers: req.headers });
-      const fields = {};
-      const files = {};
-      let fileCount = 0;
-      let filesProcessed = 0;
+    const bb = busboy({ 
+      headers: req.headers,
+      limits: {
+        fileSize: 100 * 1024 * 1024, // 100MB limit
+        files: 1
+      }
+    });
+    
+    const fields = {};
+    const files = {};
+    let fileProcessed = false;
 
-      busboy.on('field', (fieldname, val) => {
-        fields[fieldname] = val;
+    bb.on('field', (name, val, info) => {
+      logger('uploadAsset', `Field [${name}]: ${val}`);
+      fields[name] = val;
+    });
+
+    bb.on('file', (name, file, info) => {
+      const { filename, encoding, mimeType } = info;
+      logger('uploadAsset', `File [${name}]: filename=${filename}, mimeType=${mimeType}`);
+      
+      const chunks = [];
+      
+      file.on('data', (data) => {
+        chunks.push(data);
       });
-
-      busboy.on('file', (fieldname, file, info) => {
-        fileCount++;
-        const { filename, encoding, mimeType } = info;
-        const chunks = [];
-
-        file.on('data', (data) => {
-          chunks.push(data);
-        });
-
-        file.on('end', () => {
-          filesProcessed++;
-          files[fieldname] = {
-            filename,
-            mimeType,
-            encoding,
-            buffer: Buffer.concat(chunks)
-          };
-        });
-
-        file.on('error', (err) => {
-          reject(err);
-        });
+      
+      file.on('end', () => {
+        logger('uploadAsset', `File [${name}] finished, size=${Buffer.concat(chunks).length}`);
+        files[name] = {
+          filename,
+          mimeType,
+          encoding,
+          buffer: Buffer.concat(chunks)
+        };
+        fileProcessed = true;
       });
-
-      busboy.on('finish', () => {
-        // Give a small delay to ensure all files are processed
-        setImmediate(() => {
-          resolve({ fields, files });
-        });
-      });
-
-      busboy.on('error', (err) => {
+      
+      file.on('error', (err) => {
+        logger('uploadAsset', `File error: ${err.message}`);
         reject(err);
       });
+    });
 
-      // Handle request errors
-      req.on('error', (err) => {
-        reject(err);
-      });
+    bb.on('finish', () => {
+      logger('uploadAsset', 'Busboy finished parsing');
+      resolve({ fields, files });
+    });
 
-      req.pipe(busboy);
-    } catch (error) {
-      reject(error);
-    }
+    bb.on('error', (err) => {
+      logger('uploadAsset', `Busboy error: ${err.message}`);
+      reject(err);
+    });
+
+    bb.on('close', () => {
+      logger('uploadAsset', 'Busboy closed');
+    });
+
+    // Pipe the request to busboy
+    req.pipe(bb);
   });
 }
 
@@ -120,6 +114,8 @@ functions.http('uploadAsset', async (req, res) => {
   }
 
   logger('uploadAsset', 'Upload request received');
+  logger('uploadAsset', `Content-Type: ${req.get('content-type')}`);
+  logger('uploadAsset', `Method: ${req.method}`);
 
   try {
     let path;
@@ -133,27 +129,37 @@ functions.http('uploadAsset', async (req, res) => {
     if (contentType.includes('multipart/form-data')) {
       logger('uploadAsset', 'Processing multipart form data');
 
-      const { fields, files } = await parseMultipartForm(req);
-
-      // Parse path from form field
-      if (!fields.path) {
-        return errorResponse(res, 400, 'Missing required field: path');
-      }
-
       try {
-        path = JSON.parse(fields.path);
-      } catch (e) {
-        return errorResponse(res, 400, 'Invalid path format. Must be a JSON array.');
-      }
+        const { fields, files } = await parseMultipartForm(req);
+        
+        logger('uploadAsset', `Fields received: ${Object.keys(fields).join(', ')}`);
+        logger('uploadAsset', `Files received: ${Object.keys(files).join(', ')}`);
 
-      // Get file from form
-      if (!files.file) {
-        return errorResponse(res, 400, 'Missing required field: file');
-      }
+        // Parse path from form field
+        if (!fields.path) {
+          return errorResponse(res, 400, 'Missing required field: path');
+        }
 
-      fileBuffer = files.file.buffer;
-      fileName = files.file.filename;
-      mimeType = files.file.mimeType;
+        try {
+          path = JSON.parse(fields.path);
+        } catch (e) {
+          logger('uploadAsset', `Path parse error: ${e.message}`);
+          return errorResponse(res, 400, 'Invalid path format. Must be a JSON array like ["folder", "file.png"]');
+        }
+
+        // Get file from form
+        if (!files.file) {
+          return errorResponse(res, 400, 'Missing required field: file');
+        }
+
+        fileBuffer = files.file.buffer;
+        fileName = files.file.filename;
+        mimeType = files.file.mimeType;
+        
+      } catch (parseError) {
+        logger('uploadAsset', `Parse error: ${parseError.message}`);
+        return errorResponse(res, 400, 'Failed to parse multipart form data', parseError.message);
+      }
 
     } 
     // Handle JSON (base64 encoded file)
@@ -194,8 +200,12 @@ functions.http('uploadAsset', async (req, res) => {
       }
     }
 
+    // Validate file buffer
+    if (!fileBuffer || fileBuffer.length === 0) {
+      return errorResponse(res, 400, 'File is empty or invalid');
+    }
+
     // Construct the full file path
-    // Join array elements with '/' to create hierarchical path
     const fullPath = path.join('/');
     
     logger('uploadAsset', `Uploading to: ${fullPath}`);
@@ -221,7 +231,7 @@ functions.http('uploadAsset', async (req, res) => {
       resumable: false
     });
 
-    // Make file publicly accessible (optional - remove if you want private files)
+    // Make file publicly accessible
     await file.makePublic();
 
     logger('uploadAsset', `File uploaded successfully: ${fullPath}`);
@@ -240,6 +250,7 @@ functions.http('uploadAsset', async (req, res) => {
 
   } catch (error) {
     logger('uploadAsset', `Error: ${error.message}`);
+    logger('uploadAsset', `Stack: ${error.stack}`);
     console.error('Upload error:', error);
 
     // Handle specific GCS errors
@@ -256,4 +267,3 @@ functions.http('uploadAsset', async (req, res) => {
 });
 
 module.exports = { functionName: 'uploadAsset' };
-
