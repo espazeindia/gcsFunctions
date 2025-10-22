@@ -47,6 +47,22 @@ functions.http('uploadAsset', async (req, res) => {
   logger('uploadAsset', 'Upload request received');
   logger('uploadAsset', `Content-Type: ${req.get('content-type')}`);
 
+  // API Key Authentication
+  const apiKey = req.get('x-api-key') || req.get('authorization')?.replace('Bearer ', '');
+  const validApiKey = process.env.UPLOAD_API_KEY || 'your-secret-api-key-here';
+
+  if (!apiKey) {
+    logger('uploadAsset', 'Missing API key');
+    return errorResponse(res, 401, 'Unauthorized: Missing API key. Provide x-api-key header.');
+  }
+
+  if (apiKey !== validApiKey) {
+    logger('uploadAsset', 'Invalid API key');
+    return errorResponse(res, 403, 'Forbidden: Invalid API key');
+  }
+
+  logger('uploadAsset', 'API key validated successfully');
+
   try {
     const { path: pathArray, fileData, mimeType, fileName } = req.body;
 

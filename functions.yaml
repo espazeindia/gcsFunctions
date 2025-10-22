@@ -13,6 +13,7 @@ region: us-central1
 memory: 512MB
 timeout: 300s
 max_instances: 100
+env_vars: UPLOAD_API_KEY=espaze_secure_key_2025_prod_v1
 ---
 # Trigger deployment
 
