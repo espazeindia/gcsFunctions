@@ -5,13 +5,21 @@ on:
     branches:
       - master
     paths:
-      - 'gcsFunctions/**'
+      - 'functions/**'
+      - 'shared/**'
+      - 'index.js'
+      - 'package.json'
+      - 'functions.yaml'
   workflow_dispatch:
 
 jobs:
   deploy:
     name: Deploy Changed Functions
     runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -36,8 +44,6 @@ jobs:
       - name: Detect Changed Functions
         id: changed
         run: |
-          cd gcsFunctions
-          
           echo "🔍 Detecting changed functions..."
           
           # Get list of changed files
@@ -79,8 +85,6 @@ jobs:
       - name: Deploy Functions
         if: steps.changed.outputs.changed_functions != '' || steps.changed.outputs.deploy_all == 'true'
         run: |
-          cd gcsFunctions
-          
           echo "📦 Installing dependencies..."
           npm install --production
           
@@ -271,6 +275,5 @@ jobs:
           echo "✅ Deployment completed!"
           echo ""
           echo "📋 Deployed Functions:"
-          cd gcsFunctions
           gcloud functions list --regions=us-central1 --format="table(name,status,runtime,updateTime)"
 
