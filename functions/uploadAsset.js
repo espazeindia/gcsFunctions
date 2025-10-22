@@ -43,39 +43,61 @@ const BUCKET_NAME = 'espaze-seller-product-assets';
  */
 function parseMultipartForm(req) {
   return new Promise((resolve, reject) => {
-    const busboy = Busboy({ headers: req.headers });
-    const fields = {};
-    const files = {};
+    try {
+      const busboy = Busboy({ headers: req.headers });
+      const fields = {};
+      const files = {};
+      let fileCount = 0;
+      let filesProcessed = 0;
 
-    busboy.on('field', (fieldname, val) => {
-      fields[fieldname] = val;
-    });
-
-    busboy.on('file', (fieldname, file, info) => {
-      const { filename, encoding, mimeType } = info;
-      const chunks = [];
-
-      file.on('data', (data) => {
-        chunks.push(data);
+      busboy.on('field', (fieldname, val) => {
+        fields[fieldname] = val;
       });
 
-      file.on('end', () => {
-        files[fieldname] = {
-          filename,
-          mimeType,
-          encoding,
-          buffer: Buffer.concat(chunks)
-        };
+      busboy.on('file', (fieldname, file, info) => {
+        fileCount++;
+        const { filename, encoding, mimeType } = info;
+        const chunks = [];
+
+        file.on('data', (data) => {
+          chunks.push(data);
+        });
+
+        file.on('end', () => {
+          filesProcessed++;
+          files[fieldname] = {
+            filename,
+            mimeType,
+            encoding,
+            buffer: Buffer.concat(chunks)
+          };
+        });
+
+        file.on('error', (err) => {
+          reject(err);
+        });
       });
-    });
 
-    busboy.on('finish', () => {
-      resolve({ fields, files });
-    });
+      busboy.on('finish', () => {
+        // Give a small delay to ensure all files are processed
+        setImmediate(() => {
+          resolve({ fields, files });
+        });
+      });
 
-    busboy.on('error', reject);
+      busboy.on('error', (err) => {
+        reject(err);
+      });
 
-    req.pipe(busboy);
+      // Handle request errors
+      req.on('error', (err) => {
+        reject(err);
+      });
+
+      req.pipe(busboy);
+    } catch (error) {
+      reject(error);
+    }
   });
 }
 
