@@ -1,0 +1,16 @@
+# ============================================================================
+# Google Cloud Functions Configuration
+# ============================================================================
+# 
+# Upload Asset Function - Uploads files to GCS bucket with hierarchical paths
+#
+
+name: uploadAsset
+entry_point: uploadAsset
+runtime: nodejs18
+trigger: http
+region: us-central1
+memory: 512MB
+timeout: 300s
+max_instances: 100
+---

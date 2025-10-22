@@ -1,0 +1,26 @@
+{
+  "name": "gcs-functions",
+  "version": "1.0.0",
+  "description": "Google Cloud Functions for Espaze India",
+  "main": "index.js",
+  "scripts": {
+    "start": "functions-framework --target=uploadAsset --port=8080",
+    "create-function": "node scripts/create-function.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "google-cloud-functions",
+    "serverless"
+  ],
+  "author": "espazeindia",
+  "license": "ISC",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.3.0",
+    "@google-cloud/storage": "^7.7.0",
+    "busboy": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+

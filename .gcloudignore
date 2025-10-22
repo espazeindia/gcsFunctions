@@ -1,0 +1,35 @@
+# This file specifies files that are *not* uploaded to Google Cloud
+# using gcloud. It follows the same syntax as .gitignore
+
+# Node.js dependencies
+node_modules/
+
+# Environment files (never upload secrets!)
+.env
+.env.*
+
+# IDE files
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Testing
+test/
+*.test.js
+coverage/
+
+# Documentation
+README.md
+readme.md
+docs/
+
+# Config files
+.eslintrc*
+.prettierrc*
+
+# GitHub
+.github/
+
