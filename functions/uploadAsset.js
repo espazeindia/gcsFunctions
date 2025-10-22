@@ -114,9 +114,6 @@ functions.http('uploadAsset', async (req, res) => {
       resumable: false
     });
 
-    // Make file publicly accessible
-    await file.makePublic();
-
     logger('uploadAsset', `File uploaded successfully: ${fullPath}`);
 
     // Generate public URL
