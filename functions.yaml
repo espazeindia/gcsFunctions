@@ -7,7 +7,7 @@
 
 name: uploadAsset
 entry_point: uploadAsset
-runtime: nodejs18
+runtime: nodejs20
 trigger: http
 region: us-central1
 memory: 512MB
