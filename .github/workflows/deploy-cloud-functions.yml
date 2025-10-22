@@ -1,0 +1,276 @@
+name: Deploy to Google Cloud Functions (Smart)
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'gcsFunctions/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Changed Functions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Need previous commit to compare
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/931415030149/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'github-actions@espaze-assets.iam.gserviceaccount.com'
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Detect Changed Functions
+        id: changed
+        run: |
+          cd gcsFunctions
+          
+          echo "🔍 Detecting changed functions..."
+          
+          # Get list of changed files
+          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD -- functions/)
+          
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Extract function names from changed files
+          CHANGED_FUNCTIONS=""
+          
+          if [ -n "$CHANGED_FILES" ]; then
+            for file in $CHANGED_FILES; do
+              # Extract function name from path (e.g., functions/helloWorld.js -> helloWorld)
+              if [[ $file =~ functions/([^/]+)\.js$ ]]; then
+                func="${BASH_REMATCH[1]}"
+                CHANGED_FUNCTIONS="$CHANGED_FUNCTIONS $func"
+              fi
+            done
+          fi
+          
+          # Check if shared files or config changed (deploy all if so)
+          SHARED_CHANGED=$(git diff --name-only HEAD^ HEAD -- shared/ index.js package.json functions.yaml)
+          
+          if [ -n "$SHARED_CHANGED" ]; then
+            echo "⚠️  Shared files or config changed. Deploying ALL functions."
+            echo "deploy_all=true" >> $GITHUB_OUTPUT
+            echo "changed_functions=" >> $GITHUB_OUTPUT
+          elif [ -n "$CHANGED_FUNCTIONS" ]; then
+            echo "📋 Changed functions:$CHANGED_FUNCTIONS"
+            echo "deploy_all=false" >> $GITHUB_OUTPUT
+            echo "changed_functions=$CHANGED_FUNCTIONS" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️  No function files changed. Skipping deployment."
+            echo "deploy_all=false" >> $GITHUB_OUTPUT
+            echo "changed_functions=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy Functions
+        if: steps.changed.outputs.changed_functions != '' || steps.changed.outputs.deploy_all == 'true'
+        run: |
+          cd gcsFunctions
+          
+          echo "📦 Installing dependencies..."
+          npm install --production
+          
+          DEPLOY_ALL="${{ steps.changed.outputs.deploy_all }}"
+          CHANGED_FUNCS="${{ steps.changed.outputs.changed_functions }}"
+          
+          if [ "$DEPLOY_ALL" == "true" ]; then
+            echo "🚀 Deploying ALL functions..."
+            FUNCTIONS_TO_DEPLOY="all"
+          else
+            echo "🎯 Deploying only changed functions: $CHANGED_FUNCS"
+            FUNCTIONS_TO_DEPLOY="$CHANGED_FUNCS"
+          fi
+          
+          # Parse and deploy functions from functions.yaml
+          FUNCTION_NAME=""
+          ENTRY_POINT=""
+          RUNTIME=""
+          TRIGGER=""
+          REGION=""
+          MEMORY=""
+          ENV_VARS=""
+          MAX_INSTANCES=""
+          TIMEOUT=""
+          
+          while IFS= read -r line; do
+            # Skip comments and empty lines
+            if [[ $line =~ ^[[:space:]]*# ]] || [[ -z "$line" ]]; then
+              continue
+            fi
+            
+            # Parse configuration
+            if [[ $line =~ ^[[:space:]]*name:[[:space:]]*(.+) ]]; then
+              FUNCTION_NAME="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^[[:space:]]*entry_point:[[:space:]]*(.+) ]]; then
+              ENTRY_POINT="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^[[:space:]]*runtime:[[:space:]]*(.+) ]]; then
+              RUNTIME="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^[[:space:]]*trigger:[[:space:]]*(.+) ]]; then
+              TRIGGER="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^[[:space:]]*region:[[:space:]]*(.+) ]]; then
+              REGION="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^[[:space:]]*memory:[[:space:]]*(.+) ]]; then
+              MEMORY="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^[[:space:]]*env_vars:[[:space:]]*(.+) ]]; then
+              ENV_VARS="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^[[:space:]]*max_instances:[[:space:]]*(.+) ]]; then
+              MAX_INSTANCES="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^[[:space:]]*timeout:[[:space:]]*(.+) ]]; then
+              TIMEOUT="${BASH_REMATCH[1]}"
+            elif [[ $line =~ ^---$ ]] && [[ -n "$FUNCTION_NAME" ]]; then
+              
+              # Check if we should deploy this function
+              SHOULD_DEPLOY=false
+              
+              if [ "$FUNCTIONS_TO_DEPLOY" == "all" ]; then
+                SHOULD_DEPLOY=true
+              elif echo "$FUNCTIONS_TO_DEPLOY" | grep -q "$FUNCTION_NAME"; then
+                SHOULD_DEPLOY=true
+              fi
+              
+              if [ "$SHOULD_DEPLOY" == "true" ]; then
+                # Deploy the function
+                echo ""
+                echo "📤 Deploying function: $FUNCTION_NAME"
+                echo "   Entry Point: ${ENTRY_POINT:-$FUNCTION_NAME}"
+                echo "   Runtime: ${RUNTIME:-nodejs18}"
+                echo "   Region: ${REGION:-us-central1}"
+                echo "   Trigger: ${TRIGGER:-http}"
+                
+                DEPLOY_CMD="gcloud functions deploy $FUNCTION_NAME \
+                  --source=. \
+                  --runtime=${RUNTIME:-nodejs18} \
+                  --entry-point=${ENTRY_POINT:-$FUNCTION_NAME} \
+                  --region=${REGION:-us-central1} \
+                  --memory=${MEMORY:-256MB}"
+                
+                # Add timeout if specified
+                if [[ -n "$TIMEOUT" ]]; then
+                  DEPLOY_CMD="$DEPLOY_CMD --timeout=$TIMEOUT"
+                fi
+                
+                # Add max instances if specified
+                if [[ -n "$MAX_INSTANCES" ]]; then
+                  DEPLOY_CMD="$DEPLOY_CMD --max-instances=$MAX_INSTANCES"
+                fi
+                
+                # Add environment variables if specified
+                if [[ -n "$ENV_VARS" ]]; then
+                  DEPLOY_CMD="$DEPLOY_CMD --set-env-vars=$ENV_VARS"
+                fi
+                
+                # Add trigger configuration
+                if [[ "$TRIGGER" == "http" ]]; then
+                  DEPLOY_CMD="$DEPLOY_CMD --trigger-http --allow-unauthenticated"
+                elif [[ "$TRIGGER" =~ ^topic:(.+) ]]; then
+                  TOPIC="${BASH_REMATCH[1]}"
+                  DEPLOY_CMD="$DEPLOY_CMD --trigger-topic=$TOPIC"
+                elif [[ "$TRIGGER" =~ ^bucket:(.+) ]]; then
+                  BUCKET="${BASH_REMATCH[1]}"
+                  DEPLOY_CMD="$DEPLOY_CMD --trigger-bucket=$BUCKET"
+                fi
+                
+                # Execute deployment
+                if eval $DEPLOY_CMD; then
+                  echo "✅ $FUNCTION_NAME deployed successfully!"
+                else
+                  echo "❌ Failed to deploy $FUNCTION_NAME"
+                  exit 1
+                fi
+              else
+                echo "⏭️  Skipping $FUNCTION_NAME (unchanged)"
+              fi
+              
+              # Reset variables
+              FUNCTION_NAME=""
+              ENTRY_POINT=""
+              RUNTIME=""
+              TRIGGER=""
+              REGION=""
+              MEMORY=""
+              ENV_VARS=""
+              MAX_INSTANCES=""
+              TIMEOUT=""
+            fi
+          done < functions.yaml
+          
+          # Deploy last function if file doesn't end with ---
+          if [[ -n "$FUNCTION_NAME" ]]; then
+            SHOULD_DEPLOY=false
+            
+            if [ "$FUNCTIONS_TO_DEPLOY" == "all" ]; then
+              SHOULD_DEPLOY=true
+            elif echo "$FUNCTIONS_TO_DEPLOY" | grep -q "$FUNCTION_NAME"; then
+              SHOULD_DEPLOY=true
+            fi
+            
+            if [ "$SHOULD_DEPLOY" == "true" ]; then
+              echo ""
+              echo "📤 Deploying function: $FUNCTION_NAME"
+              
+              DEPLOY_CMD="gcloud functions deploy $FUNCTION_NAME \
+                --source=. \
+                --runtime=${RUNTIME:-nodejs18} \
+                --entry-point=${ENTRY_POINT:-$FUNCTION_NAME} \
+                --region=${REGION:-us-central1} \
+                --memory=${MEMORY:-256MB}"
+              
+              if [[ -n "$TIMEOUT" ]]; then
+                DEPLOY_CMD="$DEPLOY_CMD --timeout=$TIMEOUT"
+              fi
+              
+              if [[ -n "$MAX_INSTANCES" ]]; then
+                DEPLOY_CMD="$DEPLOY_CMD --max-instances=$MAX_INSTANCES"
+              fi
+              
+              if [[ -n "$ENV_VARS" ]]; then
+                DEPLOY_CMD="$DEPLOY_CMD --set-env-vars=$ENV_VARS"
+              fi
+              
+              if [[ "$TRIGGER" == "http" ]]; then
+                DEPLOY_CMD="$DEPLOY_CMD --trigger-http --allow-unauthenticated"
+              elif [[ "$TRIGGER" =~ ^topic:(.+) ]]; then
+                TOPIC="${BASH_REMATCH[1]}"
+                DEPLOY_CMD="$DEPLOY_CMD --trigger-topic=$TOPIC"
+              elif [[ "$TRIGGER" =~ ^bucket:(.+) ]]; then
+                BUCKET="${BASH_REMATCH[1]}"
+                DEPLOY_CMD="$DEPLOY_CMD --trigger-bucket=$BUCKET"
+              fi
+              
+              if eval $DEPLOY_CMD; then
+                echo "✅ $FUNCTION_NAME deployed successfully!"
+              else
+                echo "❌ Failed to deploy $FUNCTION_NAME"
+                exit 1
+              fi
+            else
+              echo "⏭️  Skipping $FUNCTION_NAME (unchanged)"
+            fi
+          fi
+          
+          echo ""
+          echo "🎉 Deployment completed!"
+
+      - name: Deployment Summary
+        if: steps.changed.outputs.changed_functions != '' || steps.changed.outputs.deploy_all == 'true'
+        run: |
+          echo "✅ Deployment completed!"
+          echo ""
+          echo "📋 Deployed Functions:"
+          cd gcsFunctions
+          gcloud functions list --regions=us-central1 --format="table(name,status,runtime,updateTime)"
+
